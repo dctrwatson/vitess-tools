@@ -17,10 +17,10 @@ ORC_PORT=30000
 
 case "$MYSQL_FLAVOR" in
   "MySQL56")
-    export EXTRA_MY_CNF=$VTROOT/config/mycnf/master_mysql56.cnf
+    export EXTRA_MY_CNF=$VTROOT/config/mycnf/master_mysql56.cnf:$VTROOT/config/mycnf/rbr.cnf
     ;;
   "MariaDB")
-    export EXTRA_MY_CNF=$VTROOT/config/mycnf/master_mariadb.cnf
+    export EXTRA_MY_CNF=$VTROOT/config/mycnf/master_mariadb.cnf:$VTROOT/config/mycnf/rbr.cnf
     ;;
   *)
     echo "Please set MYSQL_FLAVOR to MySQL56 or MariaDB."
