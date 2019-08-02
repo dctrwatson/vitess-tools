@@ -134,8 +134,11 @@ def set_cell_and_keyspace(default_cell):
     if '-' in CELL:
         print("Error: CELL must not contain a '-' character")
         sys.exit(1)
-    default_keyspace = 'messagedb'
-    KEYSPACE = read_value('Enter KEYSPACE name:', default_keyspace)
+    if args.keyspace:
+        KEYSPACE = args.keyspace
+    else:
+        default_keyspace = 'messagedb'
+        KEYSPACE = read_value('Enter KEYSPACE name:', default_keyspace)
 
 base_ports = {
     'zk2': dict(leader_port=28881, election_port=38881, client_port=21811),
@@ -154,8 +157,12 @@ class ConfigType(object):
     """
     ConfigTypes = [dict, bytes, list, int, str]
 
+    subdir = None
+
     def get_config_file(self):
         config_dir = os.path.join(DEPLOYMENT_DIR, 'config')
+        if self.subdir:
+            config_dir = os.path.join(config_dir, self.subdir)
         return os.path.join(config_dir, '%s.json' % self.short_name)
 
     def write_config(self):
@@ -481,6 +488,8 @@ ZK_CONFIG=%(zk_config)s
         return 'zk-%s-instance-%03d.sh' % (ftype, i)
 
     def make_header(self):
+        vtdataroot = VTDATAROOT
+        vtroot = VTROOT
         zk_config_var = self.zk_config_var
         topology_flags = self.topology_flags
         zk_server_var = self.zk_server_var
@@ -489,6 +498,9 @@ ZK_CONFIG=%(zk_config)s
         vtroot = VTROOT
         vttop = VTTOP
         return """#!/bin/bash
+
+export VTROOT=%(vtroot)s
+export VTDATAROOT=%(vtdataroot)s
 
 ZK_CONFIG="%(zk_config_var)s"
 ZK_SERVER="%(zk_server_var)s"
@@ -526,11 +538,13 @@ CELL="%(cell)s"
         out.append('')
         out.append('# Create /vitess/global and /vitess/CELLNAME paths if they do not exist.')
         cmd = [os.path.join(VTROOT, 'bin/zk'),
+               '-log_dir', '${VTDATAROOT}/tmp',
                '-server', '${ZK_SERVER}',
                'touch','-p','/vitess/global']
 
         out.append(' '.join(cmd))
         cmd = [os.path.join(VTROOT, 'bin/zk'),
+               '-log_dir', '${VTDATAROOT}/tmp',
                '-server', '${ZK_SERVER}',
                'touch','-p','/vitess/${CELL}']
         out.append(' '.join(cmd))
@@ -538,6 +552,7 @@ CELL="%(cell)s"
         out.append('')
         out.append('# Initialize cell.')
         cmd = [os.path.join(VTROOT, 'bin/vtctl'),
+               '-log_dir', '${VTDATAROOT}/tmp',
                '${TOPOLOGY_FLAGS}',
                'AddCellInfo',
                '-root /vitess/${CELL}',
@@ -795,7 +810,7 @@ class MySqld(HostClass):
 
     def __init__(self, vttablet):
         self.up_filename = 'mysqld-%s-up.sh' % KEYSPACE
-        self.down_filename = 'mysqld-%s-down.sh' % KEYSPACE 
+        self.down_filename = 'mysqld-%s-down.sh' % KEYSPACE
         self.vttablet = vttablet
         self.shards = self.vttablet.shards
         self.tablets = self.vttablet.tablets
@@ -870,7 +885,7 @@ class MySqld(HostClass):
         out.append('')
         for shard in self.shards:
             shard_out = self.down_commands_shard(shard)
-            script = write_bin_file('mysqld-down-shard-%s.sh' % shard, shard_out)
+            script = write_bin_file('mysqld-down-%s-shard-%s.sh' % (KEYSPACE, shard), shard_out)
             out.append(script)
             out.append('')
         return '\n'.join(out)
@@ -891,8 +906,9 @@ class VtTablet(HostClass):
     tablet_types = ['master', 'replica', 'rdonly']
 
     def __init__(self, hostname, ls, vtctld):
+        self.subdir = KEYSPACE
         self.up_filename = 'vttablet-%s-up.sh' % KEYSPACE
-        self.down_filename = 'vttablet-%s-down.sh' % KEYSPACE        
+        self.down_filename = 'vttablet-%s-down.sh' % KEYSPACE
         self.manage_mysqld = True
         self.hostname = hostname
         self.ls = ls
@@ -907,9 +923,12 @@ class VtTablet(HostClass):
 
     def read_config_interactive(self):
         print()
-        print('A Vitess Tablet is comprised of a vttablet process and a mysqld process.')
-        manage_mysqld = read_value('Do you want mysqld managed with vttablets?', 'Y')
-        self.manage_mysqld = manage_mysqld.startswith('Y') or manage_mysqld.startswith('y')
+        if not args.external_mysql:
+            print('A Vitess Tablet is comprised of a vttablet process and a mysqld process.')
+            manage_mysqld = read_value('Do you want mysqld managed with vttablets?', 'Y')
+            self.manage_mysqld = manage_mysqld.startswith('Y') or manage_mysqld.startswith('y')
+        else:
+            self.manage_mysqld = False
         print()
         print()
         print('Now we will gather information about vttablets for shards')
@@ -1041,21 +1060,16 @@ TOPOLOGY_FLAGS="%(topology_flags)s"
     def instance_header(self, tablet):
         # if mysql_host and host are not the same, we need
         # to do things differently.
-        external_mysql = 0
-        if args.external_mysql:
-            external_mysql = 1
-        if external_mysql:
-            extra_params = "-mycnf_server_id %s" % tablet['unique_id']
-            mysql_host = tablet['mysql_host']
-            mysql_port = tablet['mysql_port']
-        else:
-            if args.external_mysql:
-                extra_params = '-enable_replication_reporter'
-            else:
-                #extra_params = '-enable_semi_sync -enable_replication_reporter'
-                extra_params = '-enable_replication_reporter'
+        if not args.external_mysql:
+            extra_params = '-enable_replication_reporter'
             mysql_host = ''
             mysql_port = ''
+            external_mysql = 0
+        else:
+            extra_params = '-disable_active_reparents'
+            mysql_host = tablet['mysql_host']
+            mysql_port = tablet['mysql_port']
+            external_mysql = 1
         topology_flags = self.ls.topology_flags
         vtdataroot = VTDATAROOT
         vtroot = VTROOT
@@ -1176,7 +1190,7 @@ BACKUP_DIR="%(backup_dir)s"
         out.append('')
         for shard in self.shards:
             shard_out = self.down_commands_shard(shard)
-            script = write_bin_file('vttablet-down-shard-%s.sh' % shard, shard_out)
+            script = write_bin_file('vttablet-down-%s-shard-%s.sh' % (KEYSPACE, shard), shard_out)
             out.append(script)
             out.append('')
         if self.manage_mysqld:
@@ -1232,6 +1246,10 @@ GLOBAL_PARAMS = {
 class DbConnectionTypes(ConfigType):
     short_name = 'db_config'
     def __init__(self):
+        if args.external_mysql:
+            self.subdir = 'external_mysql'
+        else:
+            self.subdir = KEYSPACE
         self.dbconfig = {}
         self.vars = {}
         self.db_types = list(DB_USERS.keys())
@@ -1283,6 +1301,8 @@ class DbConnectionTypes(ConfigType):
         cell = CELL
         keyspace = KEYSPACE
         for param, default in GLOBAL_PARAMS.items():
+            if param == 'dbname' and args.external_mysql:
+                default = keyspace
             if '%' in param:
                 param = param % locals()
             if '%' in default:
@@ -1317,7 +1337,14 @@ class DbConnectionTypes(ConfigType):
             write_bin_file(fname, out)
 
     def get_dbname(self):
-        return self.dbconfig['global']['dbname']
+        keyspace = KEYSPACE
+        default_dbname = GLOBAL_PARAMS['dbname'] % locals()
+        dbname = self.dbconfig['global']['dbname']
+        # External MySQL just match keyspace
+        if args.external_mysql and default_dbname != dbname:
+            return keyspace
+        else:
+            return dbname
 
     def get_dba_flags(self):
         charset = self.dbconfig['global']['charset']
@@ -1492,6 +1519,9 @@ def define_args():
 
     ap.add_argument('--vtctld-addr',
                     help='Specify vtctld-addr (useful in non-interactive mode).')
+
+    ap.add_argument('--keyspace',
+                    help='Specific keyspace (userful in non-interactivemode).')
     return ap
 
 def create_start_cluster(vtctld_host, vtgate_host, tablets, dbname):

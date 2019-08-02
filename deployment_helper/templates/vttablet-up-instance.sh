@@ -29,6 +29,7 @@ case "$MYSQL_FLAVOR" in
 esac
 
 mkdir -p ${VTDATAROOT}/tmp
+mkdir -p ${VTDATAROOT}/${TABLET_DIR}
 mkdir -p ${BACKUP_DIR}
 
 echo "Starting vttablet for $ALIAS..."
@@ -53,6 +54,10 @@ $VTROOT/bin/vttablet \
     -vtctld_addr http://${VTCTLD_HOST}:${VTCTLD_WEB_PORT}/ \
     -orc_api_url http://${ORC_HOST}:${ORC_PORT}/api \
     -orc_discover_interval "2m" \
+    -queryserver-config-pool-size 24 \
+    -queryserver-config-stream-pool-size 24 \
+    -queryserver-config-transaction-cap 300 \
+    -client-found-rows-pool-size 300 \
     $DBCONFIG_FLAGS \
     ${MYSQL_AUTH_PARAM} ${EXTRA_PARAMS}\
     > $VTDATAROOT/$TABLET_DIR/vttablet.out 2>&1 &
